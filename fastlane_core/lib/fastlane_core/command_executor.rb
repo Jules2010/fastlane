@@ -56,13 +56,14 @@ module FastlaneCore
         begin
 
           status = FastlaneCore::FastlanePty.spawn(command) do |command_stdout, command_stdin, pid|
-            begin
-              if pid_created
-                pid_created.call(pid)
-              end
-              command_stdout.each do |l|
-                line = l.strip # strip so that \n gets removed
-                output << line
+            
+            if pid_created
+              pid_created.call(pid)
+            end
+
+            command_stdout.each do |l|
+              line = l.strip # strip so that \n gets removed
+              output << line
 
               next unless print_all
 
@@ -73,6 +74,15 @@ module FastlaneCore
 
               UI.command_output(line) unless suppress_output
             end
+
+            #rescue Errno::EIO
+              # This is expected on some linux systems, that indicates that the subcommand finished
+              # and we kept trying to read, ignore it
+            #ensure
+              Process.wait(pid)
+            #end
+
+            #end
           end
         rescue => ex
           # FastlanePty adds exit_status on to StandardError so every error will have a status code
