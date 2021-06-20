@@ -195,8 +195,8 @@ open class Snapshot: NSObject {
 
 extension XCUIElement {
     var isLoadingIndicator: Bool {
-        let whiteListedLoaders = ["GeofenceLocationTrackingOn", "StandardLocationTrackingOn"]
-        if whiteListedLoaders.contains(self.identifier) {
+        let allowListedLoaders = ["GeofenceLocationTrackingOn", "StandardLocationTrackingOn"]
+        if allowListedLoaders.contains(self.identifier) {
             return false
         }
         return self.frame.size == CGSize(width: 10, height: 20)

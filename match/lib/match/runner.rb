@@ -18,6 +18,7 @@ module Match
 
     attr_accessor :storage
 
+    # rubocop:disable Metrics/PerceivedComplexity
     def run(params)
       self.files_to_commit = []
 
@@ -38,16 +39,25 @@ module Match
         git_user_email: params[:git_user_email],
         clone_branch_directly: params[:clone_branch_directly],
         git_basic_authorization: params[:git_basic_authorization],
+        git_bearer_authorization: params[:git_bearer_authorization],
+        git_private_key: params[:git_private_key],
         type: params[:type].to_s,
         generate_apple_certs: params[:generate_apple_certs],
         platform: params[:platform].to_s,
         google_cloud_bucket_name: params[:google_cloud_bucket_name].to_s,
         google_cloud_keys_file: params[:google_cloud_keys_file].to_s,
         google_cloud_project_id: params[:google_cloud_project_id].to_s,
+        s3_region: params[:s3_region],
+        s3_access_key: params[:s3_access_key],
+        s3_secret_access_key: params[:s3_secret_access_key],
+        s3_bucket: params[:s3_bucket],
+        s3_object_prefix: params[:s3_object_prefix],
         readonly: params[:readonly],
         username: params[:readonly] ? nil : params[:username], # only pass username if not readonly
         team_id: params[:team_id],
-        team_name: params[:team_name]
+        team_name: params[:team_name],
+        api_key_path: params[:api_key_path],
+        api_key: params[:api_key]
       })
       storage.download
 
@@ -59,7 +69,7 @@ module Match
       encryption.decrypt_files if encryption
 
       unless params[:readonly]
-        self.spaceship = SpaceshipEnsure.new(params[:username], params[:team_id], params[:team_name])
+        self.spaceship = SpaceshipEnsure.new(params[:username], params[:team_id], params[:team_name], api_token(params))
         if params[:type] == "enterprise" && !Spaceship.client.in_house?
           UI.user_error!("You defined the profile type 'enterprise', but your Apple account doesn't support In-House profiles")
         end
@@ -78,13 +88,21 @@ module Match
       # Verify the App ID (as we don't want 'match' to fail at a later point)
       if spaceship
         app_identifiers.each do |app_identifier|
-          spaceship.bundle_identifier_exists(username: params[:username], app_identifier: app_identifier)
+          spaceship.bundle_identifier_exists(username: params[:username], app_identifier: app_identifier, platform: params[:platform])
         end
       end
 
       # Certificate
       cert_id = fetch_certificate(params: params, working_directory: storage.working_directory)
-      spaceship.certificate_exists(username: params[:username], certificate_id: cert_id) if spaceship
+
+      # Mac Installer Distribution Certificate
+      additional_cert_types = params[:additional_cert_types] || []
+      cert_ids = additional_cert_types.map do |additional_cert_type|
+        fetch_certificate(params: params, working_directory: storage.working_directory, specific_cert_type: additional_cert_type)
+      end
+
+      cert_ids << cert_id
+      spaceship.certificates_exists(username: params[:username], certificate_ids: cert_ids) if spaceship
 
       # Provisioning Profiles
       unless params[:skip_provisioning_profiles]
@@ -118,6 +136,12 @@ module Match
     ensure
       storage.clear_changes if storage
     end
+    # rubocop:enable Metrics/PerceivedComplexity
+
+    def api_token(params)
+      api_token = Spaceship::ConnectAPI::Token.from(hash: params[:api_key], filepath: params[:api_key_path])
+      return api_token
+    end
 
     # Used when creating a new certificate or profile
     def prefixed_working_directory
@@ -132,8 +156,8 @@ module Match
       end
     end
 
-    def fetch_certificate(params: nil, working_directory: nil)
-      cert_type = Match.cert_type_sym(params[:type])
+    def fetch_certificate(params: nil, working_directory: nil, specific_cert_type: nil)
+      cert_type = Match.cert_type_sym(specific_cert_type || params[:type])
 
       certs = Dir[File.join(prefixed_working_directory, "certs", cert_type.to_s, "*.cer")]
       keys = Dir[File.join(prefixed_working_directory, "certs", cert_type.to_s, "*.p12")]
@@ -141,7 +165,7 @@ module Match
       if certs.count == 0 || keys.count == 0
         UI.important("Couldn't find a valid code signing identity for #{cert_type}... creating one for you now")
         UI.crash!("No code signing identity found and can not create a new one because you enabled `readonly`") if params[:readonly]
-        cert_path = Generator.generate_certificate(params, cert_type, prefixed_working_directory)
+        cert_path = Generator.generate_certificate(params, cert_type, prefixed_working_directory, specific_cert_type: specific_cert_type)
         private_key_path = cert_path.gsub(".cer", ".p12")
 
         self.files_to_commit << cert_path
@@ -190,18 +214,26 @@ module Match
       return File.basename(cert_path).gsub(".cer", "") # Certificate ID
     end
 
+    # rubocop:disable Metrics/PerceivedComplexity
     # @return [String] The UUID of the provisioning profile so we can verify it with the Apple Developer Portal
     def fetch_provisioning_profile(params: nil, certificate_id: nil, app_identifier: nil, working_directory: nil)
       prov_type = Match.profile_type_sym(params[:type])
 
       names = [Match::Generator.profile_type_name(prov_type), app_identifier]
-      if params[:platform].to_s != :ios.to_s
+      if params[:platform].to_s == :tvos.to_s || params[:platform].to_s == :catalyst.to_s
         names.push(params[:platform])
       end
 
       profile_name = names.join("_").gsub("*", '\*') # this is important, as it shouldn't be a wildcard
       base_dir = File.join(prefixed_working_directory, "profiles", prov_type.to_s)
-      profiles = Dir[File.join(base_dir, "#{profile_name}.mobileprovision")]
+
+      extension = ".mobileprovision"
+      if [:macos.to_s, :catalyst.to_s].include?(params[:platform].to_s)
+        extension = ".provisionprofile"
+      end
+
+      profile_file = "#{profile_name}#{extension}"
+      profiles = Dir[File.join(base_dir, profile_file)]
       if Helper.mac?
         keychain_path = FastlaneCore::Helper.keychain_path(params[:keychain_name]) unless params[:keychain_name].nil?
       end
@@ -223,7 +255,7 @@ module Match
 
       if profile.nil? || force
         if params[:readonly]
-          UI.error("No matching provisioning profiles found for '#{profile_name}'")
+          UI.error("No matching provisioning profiles found for '#{profile_file}'")
           UI.error("A new one cannot be created because you enabled `readonly`")
           if Dir.exist?(base_dir) # folder for `prov_type` does not exist on first match use for that type
             all_profiles = Dir.entries(base_dir).reject { |f| f.start_with?(".") }
@@ -253,7 +285,7 @@ module Match
         FileUtils.cp(profile, params[:output_path])
       end
 
-      if spaceship && !spaceship.profile_exists(username: params[:username], uuid: uuid)
+      if spaceship && !spaceship.profile_exists(username: params[:username], uuid: uuid, platform: params[:platform])
         # This profile is invalid, let's remove the local file and generate a new one
         File.delete(profile)
         # This method will be called again, no need to modify `files_to_commit`
@@ -284,28 +316,49 @@ module Match
 
       return uuid
     end
+    # rubocop:enable Metrics/PerceivedComplexity
 
     def device_count_different?(profile: nil, keychain_path: nil, platform: nil)
       return false unless profile
 
       parsed = FastlaneCore::ProvisioningProfile.parse(profile, keychain_path)
       uuid = parsed["UUID"]
-      portal_profile = Spaceship.provisioning_profile.all.detect { |i| i.uuid == uuid }
+
+      all_profiles = Spaceship::ConnectAPI::Profile.all(includes: "devices")
+      portal_profile = all_profiles.detect { |i| i.uuid == uuid }
 
       if portal_profile
-        profile_device_count = portal_profile.devices.count
+        profile_device_count = portal_profile.fetch_all_devices.count
 
-        portal_device_count =
+        device_classes =
           case platform
           when :ios
-            Spaceship.device.all_ios_profile_devices.count
+            [
+              Spaceship::ConnectAPI::Device::DeviceClass::IPAD,
+              Spaceship::ConnectAPI::Device::DeviceClass::IPHONE,
+              Spaceship::ConnectAPI::Device::DeviceClass::IPOD,
+              Spaceship::ConnectAPI::Device::DeviceClass::APPLE_WATCH
+            ]
           when :tvos
-            Spaceship.device.all_apple_tvs.count
-          when :mac
-            Spaceship.device.all_macs.count
+            [
+              Spaceship::ConnectAPI::Device::DeviceClass::APPLE_TV
+            ]
+          when :mac, :catalyst
+            [
+              Spaceship::ConnectAPI::Device::DeviceClass::MAC
+            ]
           else
-            Spaceship.device.all.count
+            []
           end
+
+        devices = Spaceship::ConnectAPI::Device.all
+        unless device_classes.empty?
+          devices = devices.select do |device|
+            device_classes.include?(device.device_class) && device.enabled?
+          end
+        end
+
+        portal_device_count = devices.size
 
         return portal_device_count != profile_device_count
       end
