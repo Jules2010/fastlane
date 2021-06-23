@@ -159,7 +159,7 @@ module Snapshot
       FileUtils.mkdir_p(folder)
 
       Thread.new do
-        FastlaneCore::CommandExecutor.execute(command: "sh /Users/jm/Dropbox/Code_ObjC/STT_V2_HD/fastlane/Promo/process-start-audio-record.sh",
+        FastlaneCore::CommandExecutor.execute(command: "sh /Users/jm/repos/Screenshots/Scripting/STTV2-PromoVideos/process-start-audio-record.sh",
                                             print_all: true,
                                         print_command: true,
                                               loading: "Recording audio...",
@@ -216,7 +216,7 @@ module Snapshot
 
       sleep(5)
       UI.message("stop_recording - About to run stop audio script")
-      FastlaneCore::CommandExecutor.execute(command: "sh /Users/jm/Dropbox/Code_ObjC/STT_V2_HD/fastlane/Promo/process-stop-audio-record.sh #{name} #{folder}/#{name}.mp4 #{folder}/#{name}-video.mp4",
+      FastlaneCore::CommandExecutor.execute(command: "sh /Users/jm/repos/Screenshots/Scripting/STTV2-PromoVideos/process-stop-audio-record.sh #{name} #{folder}/#{name}.mp4 #{folder}/#{name}-video.mp4",
                                           print_all: true,
                                       print_command: true,
                                             loading: "Processing audio / video operations...",
